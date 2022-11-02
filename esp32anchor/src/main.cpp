@@ -158,7 +158,8 @@ void mainAnchor() {
                 range_B = range;
                 received_B = true;
 
-                String report = String(ANCHOR_INDEX) + String(":") + String(range_self) + String(":");
+                String report = String("1:"); // [TODO] tag short address here
+                report += String(ANCHOR_INDEX) + String(":") + String(range_self) + String(":");
                 report += String(recv_data[7]) + String(":") + String(range_B);
 
                 if (!client.connected()) {
