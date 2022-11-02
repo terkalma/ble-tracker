@@ -7,20 +7,10 @@
 #include <SPI.h>
 #include "DW1000Ranging.h"
 #include "DW1000.h"
-
-// leftmost two bytes below will become the "short address"
-char anchor_addr[23]{'8', '%', ':', '0', '0', ':', '5', 'B', ':', 'D', '5', ':', 'A', '9', ':', '9', 'A', ':', 'E', '2', ':', '9', 'C'};
+#include "config.h"
 
 //calibrated Antenna Delay setting for this anchor
 uint16_t Adelay;
-
-// calibration distance
-float dist_m = 3.0; //meters
-
-#define SPI_SCK 18
-#define SPI_MISO 19
-#define SPI_MOSI 23
-#define DW_CS 4
 
 void newRange()
 {
@@ -49,11 +39,6 @@ void inactiveDevice(DW1000Device *device)
   Serial.println(device->getShortAddress(), HEX);
 }
 
-// connection pins
-const uint8_t PIN_RST = 27; // reset pin
-const uint8_t PIN_IRQ = 34; // irq pin
-const uint8_t PIN_SS = 4;   // spi select pin
-
 void setup()
 {
   if (ANCHOR_INDEX == 1) {
@@ -69,8 +54,6 @@ void setup()
   Serial.println("Anchor config and start");
   Serial.print("Antenna delay ");
   Serial.println(Adelay);
-  Serial.print("Calibration distance ");
-  Serial.println(dist_m);
 
   //init the configuration
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
@@ -85,11 +68,6 @@ void setup()
 
   //start the module as an anchor, do not assign random short address
   DW1000Ranging.startAsAnchor(anchor_addr, DW1000.MODE_LONGDATA_RANGE_LOWPOWER, false);
-  // DW1000Ranging.startAsAnchor(ANCHOR_ADD, DW1000.MODE_SHORTDATA_FAST_LOWPOWER);
-  // DW1000Ranging.startAsAnchor(ANCHOR_ADD, DW1000.MODE_LONGDATA_FAST_LOWPOWER);
-  // DW1000Ranging.startAsAnchor(ANCHOR_ADD, DW1000.MODE_SHORTDATA_FAST_ACCURACY);
-  // DW1000Ranging.startAsAnchor(ANCHOR_ADD, DW1000.MODE_LONGDATA_FAST_ACCURACY);
-  // DW1000Ranging.startAsAnchor(ANCHOR_ADD, DW1000.MODE_LONGDATA_RANGE_ACCURACY);
 }
 
 void loop()
