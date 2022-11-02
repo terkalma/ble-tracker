@@ -189,10 +189,6 @@ void anchor(int index) {
       delay(4); // Tweak based on your hardware
       range_self = result.range;
       transmitRangeReport();
-
-      String rangeString = "Range: "; rangeString += range_self; rangeString += " m";
-      rangeString += "\t RX power: "; rangeString += DW1000Ng::getReceivePower(); rangeString += " dBm";
-      Serial.println(rangeString);
     }
 }
 
