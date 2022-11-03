@@ -11,10 +11,12 @@ class Tag:
 
         self.ad = ((self.a1.x - self.a2.x) ** 2 + (self.a1.y - self.a2.y) ** 2) ** 0.5        
         self.ds = [0] * 2
+        self.dss = [[], []]
         self.ms = [False, False]
 
     def set_distance(self, anchor_id, distance):
         self.ds[anchor_id - 1] = distance
+        self.dss[anchor_id - 1].append(distance)
         self.ms[anchor_id - 1] = True
 
     def calculate(self):        
