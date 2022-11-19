@@ -1,44 +1,96 @@
-/*
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-*/
-
-/*
- * StandardRTLSAnchorMain_TWR.ino
- *
- * This is an example master anchor in a RTLS using two way ranging ISO/IEC 24730-62_2013 messages
- */
-
 #include <DW1000Ng.hpp>
 #include <DW1000NgUtils.hpp>
 #include <DW1000NgRanging.hpp>
-#include <DW1000NgRTLS.hpp>
+#include "STwr.h"
 #include "config.h"
 #include "WiFi.h"
-#include <PubSubClient.h>
+#include <WiFiClient.h>
+#include <Redis.h>
 
-WiFiClient wifiClient;
-PubSubClient client(wifiClient);
+WiFiClient redisConn;
+Redis* redis_client;
 
-void reconnect() {
-  // Loop until we're reconnected
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
-    if (client.connect("espClient", UNAME, PWD)) {
 
+double measureDistance(byte tag_id)
+{
+  STwr::transmitRangeInit(tag_id);
+  if (STwr::receiveFrame()) {
+    size_t len = DW1000Ng::getReceivedDataLength();
+    byte data[len];
+    DW1000Ng::getReceivedData(data, len);
+    if (len > 9 && data[9] == FN_POLL) {
+      uint64_t time_poll_received = DW1000Ng::getReceiveTimestamp();
+      STwr::transmitResponseToPoll(tag_id);
+      uint64_t time_response_to_poll = DW1000Ng::getTransmitTimestamp();
+      delayMicroseconds(1300); // final response from anchor is delayed by 1500
+      if (STwr::receiveFrame()) {
+        size_t len = DW1000Ng::getReceivedDataLength();
+        byte data[len];
+        DW1000Ng::getReceivedData(data, len);
+        if (len > 18 && data[9] == FN_FINAL_RESPONSE) {
+          uint64_t time_final_message = DW1000Ng::getReceiveTimestamp();
+          double range = DW1000NgRanging::computeRangeAsymmetric(
+              DW1000NgUtils::bytesAsValue(data + 10, LENGTH_TIMESTAMP), // Poll send time
+              time_poll_received,
+              time_response_to_poll, // Response to poll sent time
+              DW1000NgUtils::bytesAsValue(data + 14, LENGTH_TIMESTAMP), // Response to Poll Received
+              DW1000NgUtils::bytesAsValue(data + 18, LENGTH_TIMESTAMP), // Final Message send time
+              time_final_message // Final message receive time
+          );
+          range = DW1000NgRanging::correctRange(range);
+          if (range < 0) {
+            return 0.001;
+          }
+          return range;
+        } else {
+          Serial.println("Not an RF message");
+          STwr::printMessage(len, data);
+        }
+      } else {
+        Serial.println("Did not receive an RF message");
+      }
     } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait .5 seconds before retrying
-      delay(500);
+      Serial.println("Data out of sync");
+      STwr::printMessage(len, data);
     }
   }
+
+  return -1.0;
 }
+
+
+double measureRobust(byte tag_id, byte count)
+{
+  byte successes = 0;
+  double d;
+  double final_d = 0.0;
+  for (byte i=0; i<count; i++) {
+    d = measureDistance(tag_id);
+
+    if (d >= 0) {
+      successes += 1;
+      final_d += d;
+    }
+  }
+
+  if (successes > 0) {
+    return final_d / successes;
+  } else {
+    return -1.0;
+  }
+}
+
+
+// void callback(char* topic, byte* payload, unsigned int length) {
+//   byte tag_index = payload[0] - '0';
+
+//   if (tag_index > 0 && tag_index < 10) {
+//     String msg = String(ANCHOR_INDEX) + String(":") + String(tag_index) + String(":");
+//     msg += String(measureRobust(tag_index, 10));
+//     Serial.print("Publishing: "); Serial.println(msg);
+//     client.publish("measurement", msg.c_str());
+//   }
+// }
 
 void connectToWifi() {
   WiFi.mode(WIFI_STA);
@@ -50,23 +102,8 @@ void connectToWifi() {
   }
 }
 
-// Extended Unique Identifier register. 64-bit device identifier. Register file: 0x01
-char EUI[] = "80:BB:CC:DD:EE:FF:00:01";
-char EUB[] = "80:BB:CC:DD:EE:FF:00:02";
-
-byte main_anchor_address[] = {0x01, 0x00};
-byte anchor_b[] = {0x02, 0x00};
-
-double range_self;
-double range_B;
-
-boolean received_B = false;
-
-byte target_eui[8];
-byte tag_shortAddress[] = {0x05, 0x00};
-uint16_t blink_rate = 200;
-
-uint16_t next_anchor = 2;
+// Extended Unique Identifier register. 64-bit device identifier.
+char EUI[] = "80:BB:CC:DD:EE:FF:00:00"; // ANCHOR INDEX will added to the last bit.
 
 device_configuration_t DEFAULT_CONFIG = {
     false,
@@ -94,31 +131,25 @@ frame_filtering_configuration_t ANCHOR_FRAME_FILTER_CONFIG = {
 };
 
 void setup() {
+    EUI[22] = '0' + ANCHOR_INDEX;
     // DEBUG monitoring
     Serial.begin(115200);
-    Serial.println("### DW1000Ng-arduino-ranging-anchor " + String(ANCHOR_INDEX) + " ###");
+    Serial.println("### DW1000Ng-ranging-anchor " + String(ANCHOR_INDEX) + " ###");
     // initialize the driver
     DW1000Ng::initializeNoInterrupt(PIN_SS, PIN_RST);
     Serial.println(F("DW1000Ng initialized ..."));
     // general configuration
     DW1000Ng::applyConfiguration(DEFAULT_CONFIG);
     DW1000Ng::enableFrameFiltering(ANCHOR_FRAME_FILTER_CONFIG);
-
-    if (ANCHOR_INDEX == 1) {
-      DW1000Ng::setEUI(EUI);
-    } else if (ANCHOR_INDEX == 2) {
-      DW1000Ng::setEUI(EUB);
-    }
-
+    DW1000Ng::setEUI(EUI);
     DW1000Ng::setPreambleDetectionTimeout(64);
     DW1000Ng::setSfdDetectionTimeout(273);
     DW1000Ng::setReceiveFrameWaitTimeoutPeriod(5000);
-
     DW1000Ng::setNetworkId(RTLS_APP_ID);
-
     DW1000Ng::setDeviceAddress(ANCHOR_INDEX);
 
-    DW1000Ng::setAntennaDelay(16436);
+    // TODO calibrate
+    DW1000Ng::setAntennaDelay(16390);
 
     Serial.println(F("Committed configuration ..."));
     // DEBUG chip info and registers pretty printed
@@ -132,72 +163,29 @@ void setup() {
     DW1000Ng::getPrintableDeviceMode(msg);
     Serial.print("Device mode: "); Serial.println(msg);
 
-    if (ANCHOR_INDEX == 1) {
-      connectToWifi();
-      client.setServer(server, 1883);
+    connectToWifi();
+    if (!redisConn.connect(REDIS_ADDR, REDIS_PORT))
+    {
+        Serial.println("Failed to connect to the Redis server!");
+        return;
     }
-}
-
-void mainAnchor() {
-  if(DW1000NgRTLS::receiveFrame()){
-        size_t recv_len = DW1000Ng::getReceivedDataLength();
-        byte recv_data[recv_len];
-        DW1000Ng::getReceivedData(recv_data, recv_len);
-
-
-        if(recv_data[0] == BLINK) {
-            DW1000NgRTLS::transmitRangingInitiation(&recv_data[2], tag_shortAddress);
-            DW1000NgRTLS::waitForTransmission();
-
-            RangeAcceptResult result = DW1000NgRTLS::anchorRangeAccept(NextActivity::RANGING_CONFIRM, next_anchor);
-            if(!result.success) return;
-            range_self = result.range;
-        } else if(recv_data[9] == 0x60) {
-            double range = static_cast<double>(DW1000NgUtils::bytesAsValue(&recv_data[10],2) / 1000.0);
-            if(received_B == false && recv_data[7] == anchor_b[0] && recv_data[8] == anchor_b[1]) {
-                range_B = range;
-                received_B = true;
-
-                String report = String("1:"); // [TODO] tag short address here
-                report += String(ANCHOR_INDEX) + String(":") + String(range_self) + String(":");
-                report += String(recv_data[7]) + String(":") + String(range_B);
-
-                if (!client.connected()) {
-                  reconnect();
-                }
-                client.publish("tag", report.c_str());
-                client.loop();
-            } else {
-                received_B = false;
-            }
-        }
+    redis_client = new Redis(redisConn);
+    auto connRet = redis_client->authenticate(REDIS_PASSWORD);
+    if (connRet == RedisSuccess)
+    {
+        Serial.println("Connected to the Redis server!");
     }
-}
-
-void transmitRangeReport() {
-    byte rangingReport[] = {DATA, SHORT_SRC_AND_DEST, DW1000NgRTLS::increaseSequenceNumber(), 0,0, 0,0, 0,0, 0x60, 0,0 };
-    DW1000Ng::getNetworkId(&rangingReport[3]);
-    memcpy(&rangingReport[5], main_anchor_address, 2);
-    DW1000Ng::getDeviceAddress(&rangingReport[7]);
-    DW1000NgUtils::writeValueToBytes(&rangingReport[10], static_cast<uint16_t>((range_self*1000)), 2);
-    DW1000Ng::setTransmitData(rangingReport, sizeof(rangingReport));
-    DW1000Ng::startTransmit();
-}
-
-void anchor(int index) {
-  RangeAcceptResult result = DW1000NgRTLS::anchorRangeAccept(NextActivity::ACTIVITY_FINISHED, blink_rate);
-    if(result.success) {
-      delay(4); // Tweak based on your hardware
-      range_self = result.range;
-      transmitRangeReport();
+    else
+    {
+        Serial.printf("Failed to authenticate to the Redis server! Errno: %d\n", (int)connRet);
+        return;
     }
 }
 
 void loop() {
-
-  if (ANCHOR_INDEX == 1) {
-    mainAnchor();
-  } else {
-    anchor(ANCHOR_INDEX);
+  if (redis_client != NULL) {
+    Serial.println(redis_client->get((String("anchor") + String(ANCHOR_INDEX)).c_str()));
   }
+
+  delay(10);
 }

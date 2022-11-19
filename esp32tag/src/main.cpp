@@ -1,27 +1,8 @@
-/*
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-*/
-
-/*
- * StandardRTLSTag_TWR.ino
- *
- * This is an example tag in a RTLS using two way ranging ISO/IEC 24730-62_2013 messages
- */
-
 #include <DW1000Ng.hpp>
-#include <DW1000NgUtils.hpp>
-#include <DW1000NgTime.hpp>
-#include <DW1000NgConstants.hpp>
-#include <DW1000NgRanging.hpp>
-#include <DW1000NgRTLS.hpp>
+#include "STwr.h"
 #include "config.h"
 
-// Extended Unique Identifier register. 64-bit device identifier. Register file: 0x01
-char EUI[] = "70:BB:CC:DD:EE:FF:00:00";
+char EUI[] = "70:AA:BB:CC:DD:EE:01:00";
 
 volatile uint32_t blink_rate = 200;
 
@@ -66,6 +47,8 @@ void setup() {
     Serial.begin(115200);
     Serial.println(F("### DW1000Ng-arduino-ranging-tag ###"));
     // initialize the driver
+
+    EUI[22] = '0' + TAG_INDEX;
     DW1000Ng::initializeNoInterrupt(PIN_SS, PIN_RST);
     Serial.println("DW1000Ng initialized ...");
     // general configuration
@@ -73,10 +56,11 @@ void setup() {
     DW1000Ng::enableFrameFiltering(TAG_FRAME_FILTER_CONFIG);
 
     DW1000Ng::setEUI(EUI);
-
+    DW1000Ng::setDeviceAddress(TAG_INDEX + 256);
     DW1000Ng::setNetworkId(RTLS_APP_ID);
 
-    DW1000Ng::setAntennaDelay(16436);
+    // TODO calibrate
+    DW1000Ng::setAntennaDelay(16390);
 
     DW1000Ng::applySleepConfiguration(SLEEP_CONFIG);
 
@@ -98,12 +82,29 @@ void setup() {
 }
 
 void loop() {
-    DW1000Ng::deepSleep();
-    delay(blink_rate);
-    DW1000Ng::spiWakeup();
-    DW1000Ng::setEUI(EUI);
-
-    RangeInfrastructureResult res = DW1000NgRTLS::tagTwrLocalize(1700);
-    if(res.success)
-        blink_rate = res.new_blink_rate;
+    if (STwr::receiveFrame()) {
+        size_t len = DW1000Ng::getReceivedDataLength();
+        byte data[len];
+        DW1000Ng::getReceivedData(data, len);
+        if(len > 15 && data[15] == FN_RANGING_INITIATION) {
+            STwr::transmitPoll(data[13]);
+            if (STwr::receiveFrame()) {
+                size_t len = DW1000Ng::getReceivedDataLength();
+                byte data[len];
+                DW1000Ng::getReceivedData(data, len);
+                // Check if it's a poll ACK
+                if (len > 9 && data[9] == FN_RESPONSE) {
+                    STwr::transmitFinal(data[7]);
+                } else {
+                    Serial.println("Error in PR");
+                    STwr::printMessage(len, data);
+                }
+            } else {
+                Serial.println("Did not receive a PR");
+            }
+        } else {
+            Serial.println("Error in RI");
+            STwr::printMessage(len, data);
+        }
+    }
 }
