@@ -80,18 +80,6 @@ double measureRobust(byte tag_id, byte count)
   }
 }
 
-
-// void callback(char* topic, byte* payload, unsigned int length) {
-//   byte tag_index = payload[0] - '0';
-
-//   if (tag_index > 0 && tag_index < 10) {
-//     String msg = String(ANCHOR_INDEX) + String(":") + String(tag_index) + String(":");
-//     msg += String(measureRobust(tag_index, 10));
-//     Serial.print("Publishing: "); Serial.println(msg);
-//     client.publish("measurement", msg.c_str());
-//   }
-// }
-
 void connectToWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_UN, WIFI_PW);
