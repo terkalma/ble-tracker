@@ -6,12 +6,25 @@
 #include "WiFi.h"
 #include <WiFiClient.h>
 #include <Redis.h>
+#include <esp_task_wdt.h>
+
+
+long delays[4] = {
+  16485,
+  16485,
+  16500,
+  16510};
+
+
+#define WDT_TIMEOUT 5
+
+// long success = 0;
+// long fail = 0;
 
 WiFiClient redisConn;
 Redis* redis_client;
 
-
-double measureDistance(byte tag_id)
+void measureDistance(byte tag_id, double* result)
 {
   STwr::transmitRangeInit(tag_id);
   if (STwr::receiveFrame()) {
@@ -29,7 +42,7 @@ double measureDistance(byte tag_id)
         DW1000Ng::getReceivedData(data, len);
         if (len > 18 && data[9] == FN_FINAL_RESPONSE) {
           uint64_t time_final_message = DW1000Ng::getReceiveTimestamp();
-          double range = DW1000NgRanging::computeRangeAsymmetric(
+          result[0] = DW1000NgRanging::computeRangeAsymmetric(
               DW1000NgUtils::bytesAsValue(data + 10, LENGTH_TIMESTAMP), // Poll send time
               time_poll_received,
               time_response_to_poll, // Response to poll sent time
@@ -37,46 +50,57 @@ double measureDistance(byte tag_id)
               DW1000NgUtils::bytesAsValue(data + 18, LENGTH_TIMESTAMP), // Final Message send time
               time_final_message // Final message receive time
           );
-          range = DW1000NgRanging::correctRange(range);
-          if (range < 0) {
-            return 0.001;
+          result[1] = DW1000NgRanging::correctRange(result[0]);
+
+          for (byte i = 0; i < 2; i++) {
+            if (result[i] < 0) {
+              result[i] = 0.001;
+            }
           }
-          return range;
+
+          result[2] = -(static_cast<double>(DW1000Ng::getReceivePower()));
+          return;
         } else {
-          Serial.println("Not an RF message");
+          PLN("Not an RF message");
           STwr::printMessage(len, data);
         }
       } else {
-        Serial.println("Did not receive an RF message");
+        PLN("Did not receive an RF message");
       }
     } else {
-      Serial.println("Data out of sync");
+      PLN("Data out of sync");
       STwr::printMessage(len, data);
     }
   }
 
-  return -1.0;
+  result[0] = -1.0;
 }
 
 
-double measureRobust(byte tag_id, byte count)
+void measureRobust(byte tag_id, byte count, double* final_result)
 {
   byte successes = 0;
-  double d;
   double final_d = 0.0;
+  double final_power = 0.0;
+  double final_uncorrected = 0.0;
   for (byte i=0; i<count; i++) {
-    d = measureDistance(tag_id);
-
-    if (d >= 0) {
+    double result[3] = {0.0, 0.0, 0.0};
+    measureDistance(tag_id, &result[0]);
+    // delay(1);
+    if (result[0] >= 0) {
       successes += 1;
-      final_d += d;
+      final_result[0] += result[0];
+      final_result[1] += result[1];
+      final_result[2] += result[2];
     }
   }
 
   if (successes > 0) {
-    return final_d / successes;
+    final_result[0] /= successes;
+    final_result[1] /= successes;
+    final_result[2] /= successes;
   } else {
-    return -1.0;
+    final_result[0] = -1.0;
   }
 }
 
@@ -84,9 +108,14 @@ void connectToWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_UN, WIFI_PW);
 
+  long t = millis();
   while (WiFi.status() != WL_CONNECTED) {
+
+    if (millis() - t > 10000) {
+      ESP.restart();
+    }
     delay(500);
-    Serial.print(".");
+    P(".");
   }
 }
 
@@ -122,10 +151,10 @@ void setup() {
     EUI[22] = '0' + ANCHOR_INDEX;
     // DEBUG monitoring
     Serial.begin(115200);
-    Serial.println("### DW1000Ng-ranging-anchor " + String(ANCHOR_INDEX) + " ###");
+    PLN("### DW1000Ng-ranging-anchor " + String(ANCHOR_INDEX) + " ###");
     // initialize the driver
     DW1000Ng::initializeNoInterrupt(PIN_SS, PIN_RST);
-    Serial.println(F("DW1000Ng initialized ..."));
+    PLN("DW1000Ng initialized ...");
     // general configuration
     DW1000Ng::applyConfiguration(DEFAULT_CONFIG);
     DW1000Ng::enableFrameFiltering(ANCHOR_FRAME_FILTER_CONFIG);
@@ -136,44 +165,80 @@ void setup() {
     DW1000Ng::setNetworkId(RTLS_APP_ID);
     DW1000Ng::setDeviceAddress(ANCHOR_INDEX);
 
-    // TODO calibrate
-    DW1000Ng::setAntennaDelay(16390);
+    // Maybe this should be different for each tag??
+    DW1000Ng::setAntennaDelay(delays[ANCHOR_INDEX-1]);
 
-    Serial.println(F("Committed configuration ..."));
+    PLN("Committed configuration ...");
     // DEBUG chip info and registers pretty printed
     char msg[128];
     DW1000Ng::getPrintableDeviceIdentifier(msg);
-    Serial.print("Device ID: "); Serial.println(msg);
+    P("Device ID: "); PLN(msg);
     DW1000Ng::getPrintableExtendedUniqueIdentifier(msg);
-    Serial.print("Unique ID: "); Serial.println(msg);
+    P("Unique ID: "); PLN(msg);
     DW1000Ng::getPrintableNetworkIdAndShortAddress(msg);
-    Serial.print("Network ID & Device Address: "); Serial.println(msg);
+    Serial.print("Network ID & Device Address: "); PLN(msg);
     DW1000Ng::getPrintableDeviceMode(msg);
-    Serial.print("Device mode: "); Serial.println(msg);
+    Serial.print("Device mode: "); PLN(msg);
 
     connectToWifi();
     if (!redisConn.connect(REDIS_ADDR, REDIS_PORT))
     {
-        Serial.println("Failed to connect to the Redis server!");
+        PLN("Failed to connect to the Redis server!");
         return;
     }
     redis_client = new Redis(redisConn);
     auto connRet = redis_client->authenticate(REDIS_PASSWORD);
     if (connRet == RedisSuccess)
     {
-        Serial.println("Connected to the Redis server!");
+        PLN("Connected to the Redis server!");
     }
     else
     {
-        Serial.printf("Failed to authenticate to the Redis server! Errno: %d\n", (int)connRet);
-        return;
+        P("Failed to authenticate to the Redis server! Errno: ");
+        PLN((int)connRet);
+        delay(1000);
+        ESP.restart();
     }
+
+    esp_task_wdt_init(WDT_TIMEOUT, true);
+    esp_task_wdt_add(NULL);
 }
 
+String ping_key = String("anchor") + String(ANCHOR_INDEX) + String("ping");
+String get_key = String("anchor") + String(ANCHOR_INDEX);
+String set_key = String("anchor") + String(ANCHOR_INDEX) + String("r");
+
 void loop() {
-  if (redis_client != NULL) {
-    Serial.println(redis_client->get((String("anchor") + String(ANCHOR_INDEX)).c_str()));
+  // Restart ESP if WIFI is not connected
+  if ((WiFi.status() != WL_CONNECTED)) {
+    delay(1000);
+    ESP.restart();
   }
 
-  delay(10);
+  if (redis_client != NULL) {
+    // long t = millis();
+    String result = redis_client->get(get_key.c_str());
+    // Serial.println(millis() - t);
+    if (result.length() > 0) {
+      byte tag_index = result.charAt(0) - '0';
+      if (tag_index > 0) {
+        double result[3] = {0.0, 0.0, 0.0};
+        measureDistance(tag_index, &result[0]);
+        String report = String(tag_index);
+        for (byte i=0; i<3; i++) {
+          report += String(":") + String(result[i]);
+        }
+        esp_task_wdt_reset();
+        redis_client->del(get_key.c_str());
+        redis_client->set(set_key.c_str(), report.c_str());
+        esp_task_wdt_reset();
+      }
+    }
+  } else {
+    delay(1000);
+    ESP.restart(); // restart ESP if redis wasn't propertly instantiated
+  }
+
+  esp_task_wdt_reset();
+  delay(50);
 }

@@ -4,6 +4,8 @@
 
 char EUI[] = "70:AA:BB:CC:DD:EE:01:00";
 
+#define FACTORY_ANTENNA_DELAY 16384
+
 volatile uint32_t blink_rate = 200;
 
 device_configuration_t DEFAULT_CONFIG = {
@@ -59,8 +61,7 @@ void setup() {
     DW1000Ng::setDeviceAddress(TAG_INDEX + 256);
     DW1000Ng::setNetworkId(RTLS_APP_ID);
 
-    // TODO calibrate
-    DW1000Ng::setAntennaDelay(16390);
+    DW1000Ng::setAntennaDelay(FACTORY_ANTENNA_DELAY); // Tags are set to factory default
 
     DW1000Ng::applySleepConfiguration(SLEEP_CONFIG);
 
